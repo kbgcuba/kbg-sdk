@@ -214,9 +214,12 @@ async function runJob(id, input) {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
-  if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true });
-  }
+      if (req.method === 'GET' && url.pathname === '/health') {
+      return send(res, 200, { ok: true, version: '2.6.92.33' });
+    }
+    if (req.method === 'GET' && url.pathname === '/version') {
+      return send(res, 200, { ok: true, version: '2.6.92.33' });
+    }
   if (!authorized(req)) return send(res, 401, { error: 'Unauthorized' });
   if (req.method === 'POST' && url.pathname === '/image') {
     try {
