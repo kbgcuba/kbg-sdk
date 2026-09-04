@@ -101,7 +101,7 @@ async function runImageJob(id, input) {
       steps: 30,
       guidance: isDream ? 6 : 4.5,
       sampler: 'dpmpp_2m',
-      scheduler: 'karras',
+      scheduler: 'simple',
       outputFormat: 'jpg',
       disableNSFWFilter: true
     };
