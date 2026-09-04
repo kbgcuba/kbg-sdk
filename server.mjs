@@ -100,7 +100,7 @@ async function runImageJob(id, input) {
       height: Number(input.height) || 1024,
       steps: 30,
       guidance: isDream ? 6 : 4.5,
-      sampler: 'DPM++ 2M',
+      sampler: 'dpmpp_2m',
       scheduler: 'karras',
       outputFormat: 'jpg',
       disableNSFWFilter: true
