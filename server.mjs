@@ -98,7 +98,7 @@ async function runImageJob(id, input) {
       numberOfMedia: 1,
       width: Number(input.width) || 1024,
       height: Number(input.height) || 1024,
-      steps: 30,
+      steps: isBeast ? 20 : 40,
       guidance: isDream ? 6 : 4.5,
       sampler: 'dpmpp_2m',
       scheduler: 'simple',
@@ -119,7 +119,7 @@ async function runImageJob(id, input) {
     if (images.length >= 1 && isBeast) {
       params.modelId = 'dark_beast_krea2_identity_edit_v1_2';
       params.steps = 10;
-      params.guidance = 1;
+      params.steps = 20;
       params.contextImages = images.slice(0, 2).map((p) => fs.readFileSync(p));
       delete params.sampler;
       delete params.negativePrompt;
