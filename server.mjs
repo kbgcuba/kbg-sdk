@@ -58,9 +58,8 @@ async function runImageJob(id, input) {
       network: 'fast',
       apiKey: input.apiKey
     });
-    const family = String(input.family || 'beast');
+    const family = String(input.family || 'epic');
     const isDream = family === 'dream';
-    const isBeast = family !== 'dream' && family !== 'epic';
     const looks = {
       photo: { style: 'photorealistic, highly detailed, natural skin, real-world lighting', pony: 'source_photo, realistic', neg: 'illustration, cartoon, anime, 3d render' },
       cinematic: { style: 'cinematic film still, shallow depth of field, anamorphic, movie lighting, film grain', pony: 'source_photo, cinematic', neg: 'snapshot, overexposed flash' },
@@ -76,55 +75,33 @@ async function runImageJob(id, input) {
     const look = looks[String(input.look || 'photo')] || looks.photo;
     let prompt = String(input.prompt || '');
     if (isDream) prompt = 'score_9, score_8_up, score_7_up, ' + look.pony + ', ' + prompt;
-    const loraLooks = {
-      photo:      { ids: ['krea2-filter-bypass-2','krea2-realism','krea2-detail-enhancer'], w: [1, 1, 1] },
-      cinematic:  { ids: ['krea2-filter-bypass-2','krea2-realism','krea2-amateur'], w: [1, 0.8, -1.5] },
-      analog:     { ids: ['krea2-filter-bypass-2','krea2-realism','krea2-amateur'], w: [1, 0.5, 1.5] },
-      editorial:  { ids: ['krea2-filter-bypass-2','krea2-realism','krea2-candid'], w: [1, 1, -3] },
-      anime:      { ids: ['krea2-filter-bypass-2','krea2-realism'], w: [1, -1] },
-      cartoon:    { ids: ['krea2-filter-bypass-2','krea2-realism'], w: [1, -1] },
-      digital:    { ids: ['krea2-filter-bypass-2','krea2-realism'], w: [1, -0.5] },
-      fantasy:    { ids: ['krea2-filter-bypass-2','krea2-realism'], w: [1, -0.8] },
-      render:     { ids: ['krea2-filter-bypass-2','krea2-realism','krea2-detail-enhancer'], w: [1, 0.3, 1] },
-      comic:      { ids: ['krea2-filter-bypass-2','krea2-realism'], w: [1, -1] }
-    };
-    const pack = loraLooks[String(input.look || 'photo')] || loraLooks.photo;
     const params = {
       type: 'image',
-      network: 'fast',
-      modelId: isDream ? 'coreml-realDream_sdxlPony11' : (isBeast ? 'dark_beast_krea2_fp8' : 'coreml-epicrealismXL_vxiiAbea2t'),
+      network: 'relaxed',
+      modelId: isDream ? 'coreml-realDream_sdxlPony11' : 'coreml-epicrealismXL_vxiiAbea2t',
       positivePrompt: prompt,
       stylePrompt: look.style,
       numberOfMedia: 1,
-      width: Number(input.width) || 1024,
-      height: Number(input.height) || 1024,
-      steps: isBeast ? 20 : 40,
+      width: Number(input.width) || 1152,
+      height: Number(input.height) || 896,
+      steps: isDream ? 24 : 20,
       guidance: isDream ? 6 : 4.5,
       sampler: 'dpmpp_2m',
       scheduler: 'simple',
       outputFormat: 'jpg',
       disableNSFWFilter: true
     };
-    if (isBeast) {
-      params.loras = pack.ids;
-      params.loraStrengths = pack.w;
-      params.guidance = 1;
+    const safe = [[1152,896],[896,1152],[1024,1024],[1216,832],[832,1216]];
+    const w = params.width;
+    const h = params.height;
+    if (!safe.some(([a, b]) => a === w && b === h)) {
+      params.width = w >= h ? 1152 : 896;
+      params.height = w >= h ? 896 : 1152;
     }
     if (isDream) {
-      params.negativePrompt = look.neg + ', malformation, bad anatomy, bad hands, missing fingers, watermark, text, jpeg artifacts';
-    } else if (!isBeast) {
-      params.negativePrompt = 'malformation, bad anatomy, watermark';
+      params.negativePrompt = look.neg + ', malformation, bad anatomy, bad hands, watermark';
     }
-    if (images[0]) params.startingImage = fs.readFileSync(images[0]);
-    if (images.length >= 1 && isBeast) {
-      params.modelId = 'dark_beast_krea2_identity_edit_v1_2';
-      params.steps = 10;
-      params.steps = 20;
-      params.contextImages = images.slice(0, 2).map((p) => fs.readFileSync(p));
-      delete params.sampler;
-      delete params.negativePrompt;
-    } else if (images.length >= 2 && !isBeast) {
-      params.modelId = isDream ? 'coreml-realDream_sdxlPony11' : 'coreml-epicrealismXL_vxiiAbea2t';
+    if (images[0]) {
       params.startingImage = fs.readFileSync(images[0]);
     }
     job.status = 'processing';
@@ -137,7 +114,7 @@ async function runImageJob(id, input) {
         job.percent = Math.max(12, Math.min(95, p));
       });
     }
-    const urls = await project.waitForCompletion();
+    const urls = await project.waitForCompletion(15 * 60 * 1000);
     const list = Array.isArray(urls) ? urls : (urls ? [urls] : []);
     job.status = 'completed';
     job.percent = 100;
@@ -199,7 +176,7 @@ async function runJob(id, input) {
         job.percent = Math.max(12, Math.min(95, p));
       });
     }
-    const urls = await project.waitForCompletion();
+    const urls = await project.waitForCompletion(15 * 60 * 1000);
     const list = Array.isArray(urls) ? urls : (urls ? [urls] : []);
     job.status = 'completed';
     job.percent = 100;
@@ -214,12 +191,12 @@ async function runJob(id, input) {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
-      if (req.method === 'GET' && url.pathname === '/health') {
-      return send(res, 200, { ok: true, version: '2.6.92.33' });
-    }
-    if (req.method === 'GET' && url.pathname === '/version') {
-      return send(res, 200, { ok: true, version: '2.6.92.33' });
-    }
+  if (req.method === 'GET' && url.pathname === '/health') {
+    return send(res, 200, { ok: true, version: '2.6.92.45' });
+  }
+  if (req.method === 'GET' && url.pathname === '/version') {
+    return send(res, 200, { ok: true, version: '2.6.92.45' });
+  }
   if (!authorized(req)) return send(res, 401, { error: 'Unauthorized' });
   if (req.method === 'POST' && url.pathname === '/image') {
     try {
