@@ -8,8 +8,10 @@ import { randomUUID } from 'crypto';
 const PORT = Number(process.env.PORT || 8787);
 const SECRET = process.env.KBG_SDK_SECRET || '';
 const jobs = new Map();
+const liveCache = new Map();
 let liveClient = null;
 let liveClientKey = '';
+let lastElsewhereAt = 0;
 
 function send(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -60,17 +62,66 @@ function jobPercent(p) {
   return Math.max(0, Math.min(99, Math.round(pct)));
 }
 
+function modeFromModel(model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('ref2') || m.includes('r2v')) return 'r2v';
+  if (m.includes('i2v')) return 'i2v';
+  if (m.includes('flf')) return 'flf2v';
+  if (m.includes('t2v')) return 't2v';
+  return 't2v';
+}
+
+function rememberLive(id, patch) {
+  const prev = liveCache.get(id) || { id, percent: 0, status: 'processing', mode: 't2v', startedAt: Math.floor(Date.now()/1000) };
+  const next = Object.assign({}, prev, patch, { id, startedAt: prev.startedAt || Math.floor(Date.now()/1000) });
+  if (Number(next.percent) < Number(prev.percent || 0) && Number(next.percent) < 1) {
+    next.percent = prev.percent;
+  } else {
+    next.percent = Math.max(Number(prev.percent || 0), Number(next.percent || 0));
+  }
+  liveCache.set(id, next);
+}
+
+function attachProject(p) {
+  if (!p) return;
+  const id = String(p.id || p.projectId || '');
+  if (!id) return;
+  const model = p.modelId || p.model || (p.params && p.params.modelId) || '';
+  rememberLive(id, {
+    status: String(p.status || 'processing').toLowerCase(),
+    percent: jobPercent(p),
+    mode: modeFromModel(model)
+  });
+  if (p._kbgLive) return;
+  p._kbgLive = true;
+  if (typeof p.on === 'function') {
+    p.on('progress', (info) => {
+      const raw = Number(info?.progress ?? info?.percent ?? info ?? 0);
+      const pct = raw > 0 && raw <= 1 ? raw * 100 : raw;
+      rememberLive(id, { percent: pct, status: 'processing' });
+    });
+    p.on('completed', () => liveCache.delete(id));
+    p.on('failed', () => liveCache.delete(id));
+  }
+}
+
 async function listLiveJobs(apiKey) {
-  const rows = [];
   try {
     if (!liveClient || liveClientKey !== apiKey) {
       const { SogniClient } = await import('@sogni-ai/sogni-client');
       liveClient = await SogniClient.createInstance({
         appId: 'kbg-video-generator',
+        appSource: 'kbg-video-generator',
         network: 'fast',
         apiKey
       });
       liveClientKey = apiKey;
+      if (liveClient.projects && typeof liveClient.projects.on === 'function') {
+        liveClient.projects.on('projectsSynced', (info) => {
+          const extra = [].concat(info?.active || [], info?.recoveredActive || []);
+          extra.forEach(attachProject);
+        });
+      }
     }
     try {
       if (liveClient.projects && typeof liveClient.projects.sync === 'function') {
@@ -78,38 +129,38 @@ async function listLiveJobs(apiKey) {
       }
     } catch (e) {}
     const tracked = (liveClient.projects && liveClient.projects.trackedProjects) || [];
-    let elsewhere = [];
-    try {
-      if (liveClient.projects && typeof liveClient.projects.listProjectsElsewhere === 'function') {
-        elsewhere = await liveClient.projects.listProjectsElsewhere();
-      }
-    } catch (e) {}
-    const all = [].concat(tracked || [], elsewhere || []);
-    const seen = new Set();
-    for (const p of all) {
-      if (!p) continue;
-      const id = String(p.id || p.projectId || '');
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      const status = String(p.status || 'processing').toLowerCase();
-      if (['completed', 'failed', 'canceled', 'cancelled'].includes(status)) continue;
-      rows.push({
-        id,
-        status: status || 'processing',
-        percent: jobPercent(p),
-        model: p.modelId || p.model || '',
-        source: p.appSource || p.recovered ? 'account' : 'account'
-      });
+    tracked.forEach(attachProject);
+    if (Date.now() - lastElsewhereAt > 15000) {
+      lastElsewhereAt = Date.now();
+      try {
+        if (liveClient.projects && typeof liveClient.projects.listProjectsElsewhere === 'function') {
+          const elsewhere = await liveClient.projects.listProjectsElsewhere();
+          (elsewhere || []).forEach(attachProject);
+        }
+      } catch (e) {}
     }
   } catch (e) {}
   for (const [id, job] of jobs) {
-    if (!job || job.status === 'completed' || job.status === 'failed') continue;
-    rows.push({
-      id,
+    if (!job || job.status === 'completed' || job.status === 'failed') {
+      liveCache.delete(id);
+      continue;
+    }
+    rememberLive(id, {
       status: job.status || 'processing',
       percent: Number(job.percent || 0),
-      model: 'minimax-h3-ref2va-fp8_r2v',
-      source: 'plugin'
+      mode: 'r2v'
+    });
+  }
+  const rows = [];
+  for (const row of liveCache.values()) {
+    const status = String(row.status || 'processing').toLowerCase();
+    if (['completed', 'failed', 'canceled', 'cancelled'].includes(status)) continue;
+    rows.push({
+      id: row.id,
+      status,
+      percent: Math.max(0, Math.min(99, Math.round(Number(row.percent) || 0))),
+      mode: row.mode || 't2v',
+      startedAt: row.startedAt || Math.floor(Date.now()/1000)
     });
   }
   return rows;
@@ -161,7 +212,10 @@ async function runJob(id, input) {
       project.on('progress', (info) => {
         const raw = Number(info?.progress ?? info?.percent ?? info ?? 0);
         const p = raw > 0 && raw <= 1 ? raw * 100 : raw;
-        if (p > 1) job.percent = Math.max(1, Math.min(95, p));
+        if (p > 1) {
+          job.percent = Math.max(1, Math.min(95, p));
+          rememberLive(id, { percent: job.percent, status: 'processing', mode: 'r2v' });
+        }
       });
     }
     const urls = await project.waitForCompletion();
@@ -180,10 +234,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.155' });
+    return send(res, 200, { ok: true, version: '2.6.91.158' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.155' });
+    return send(res, 200, { ok: true, version: '2.6.91.158' });
   }
   if (!authorized(req)) return send(res, 401, { error: 'Unauthorized' });
   if (req.method === 'POST' && url.pathname === '/live') {
