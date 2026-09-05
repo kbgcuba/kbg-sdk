@@ -12,6 +12,35 @@ const liveCache = new Map();
 let liveClient = null;
 let liveClientKey = '';
 let lastElsewhereAt = 0;
+const watching = new Set();
+
+async function followWorkflow(client, id) {
+  if (!id || watching.has(id) || !client || !client.workflows) return;
+  watching.add(id);
+  try {
+    if (typeof client.workflows.streamEvents === 'function') {
+      for await (const ev of client.workflows.streamEvents(id)) {
+        const data = (ev && ev.data) || ev || {};
+        const raw = data.progress ?? data.percent ?? data.progressPercent ?? ev.progress ?? ev.percent;
+        const pct = asPct(raw);
+        if (pct) rememberLive(id, { percent: pct, status: 'processing' });
+        const name = String(ev.event || ev.type || data.type || data.event || '');
+        if (/complet|fail|cancel/i.test(name)) {
+          liveCache.delete(id);
+          break;
+        }
+      }
+    } else if (typeof client.workflows.events === 'function') {
+      const evs = await client.workflows.events(id);
+      (Array.isArray(evs) ? evs : []).forEach(function (ev) {
+        const data = (ev && ev.data) || ev || {};
+        const pct = asPct(data.progress ?? data.percent ?? data.progressPercent);
+        if (pct) rememberLive(id, { percent: pct, status: 'processing' });
+      });
+    }
+  } catch (e) {}
+  watching.delete(id);
+}
 
 function send(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -252,10 +281,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.164' });
+    return send(res, 200, { ok: true, version: '2.6.91.167' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.164' });
+    return send(res, 200, { ok: true, version: '2.6.91.167' });
   }
   if (!authorized(req)) return send(res, 401, { error: 'Unauthorized' });
   if (req.method === 'POST' && url.pathname === '/live') {
@@ -263,6 +292,8 @@ const server = http.createServer(async (req, res) => {
       const input = await readBody(req);
       if (!input.apiKey) return send(res, 400, { error: 'apiKey required' });
       const list = await listLiveJobs(input.apiKey);
+      const ids = Array.isArray(input.ids) ? input.ids : [];
+      ids.slice(0, 8).forEach((id) => followWorkflow(liveClient, String(id || '')));
       return send(res, 200, { ok: true, jobs: list });
     } catch (err) {
       return send(res, 200, { ok: false, jobs: [], error: String(err.message || err) });
@@ -277,7 +308,7 @@ const server = http.createServer(async (req, res) => {
       runJob(id, input);
       return send(res, 200, { id, status: 'queued' });
     } catch (err) {
-      return send(res, 400, { error: String(err.message || err) });
+      return send(res, 400, { error: 'Unauthorized' });
     }
   }
   const match = url.pathname.match(/^\/(?:r2v|job)\/(.+)$/);
