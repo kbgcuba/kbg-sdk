@@ -48,18 +48,36 @@ async function download(url, dest) {
   return dest;
 }
 
+function asPct(n) {
+  n = Number(n);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n <= 1) n = n * 100;
+  return Math.max(0, Math.min(99, n));
+}
 function jobPercent(p) {
-  let pct = Number(p && (p.progress ?? p.percent ?? 0));
-  if (!Number.isFinite(pct)) pct = 0;
-  if (pct > 0 && pct <= 1) pct = pct * 100;
-  const jobsArr = (p && p.jobs) || [];
-  if (!pct && jobsArr[0]) {
-    const j = jobsArr[0];
-    const jp = Number(j.progress ?? j.externalProgress ?? 0);
-    if (jp > 0) pct = jp > 1 ? jp : jp * 100;
-    else if (j.stepCount) pct = (Number(j.step || 0) / Number(j.stepCount)) * 100;
+  if (!p) return 0;
+  let best = 0;
+  const take = function (n) { const v = asPct(n); if (v > best) best = v; };
+  try { take(p.progress); } catch (e) {}
+  take(p.percent);
+  take(p.externalProgress);
+  take(p.progressPercent);
+  const jobsArr = p.jobs || [];
+  for (const j of jobsArr) {
+    if (!j) continue;
+    try { take(j.progress); } catch (e) {}
+    take(j.percent);
+    take(j.externalProgress);
+    take(j.progressPercent);
+    if (j.stepCount) take((Number(j.step || 0) / Number(j.stepCount)) * 100);
   }
-  return Math.max(0, Math.min(99, Math.round(pct)));
+  try {
+    const dump = JSON.stringify(p);
+    const re = /"(?:external)?[Pp]rogress(?:Percent)?"\s*:\s*([0-9.]+)/g;
+    let m;
+    while ((m = re.exec(dump))) take(m[1]);
+  } catch (e) {}
+  return Math.round(best);
 }
 
 function modeFromModel(model) {
@@ -234,10 +252,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.158' });
+    return send(res, 200, { ok: true, version: '2.6.91.164' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.158' });
+    return send(res, 200, { ok: true, version: '2.6.91.164' });
   }
   if (!authorized(req)) return send(res, 401, { error: 'Unauthorized' });
   if (req.method === 'POST' && url.pathname === '/live') {
