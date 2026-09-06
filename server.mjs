@@ -323,12 +323,12 @@ async function runVideoJob(id, input) {
     if (input.imageUrl) {
       const dest = path.join(dir, 'start');
       await download(input.imageUrl, dest);
-      params.startingImage = fs.readFileSync(dest);
+      params.referenceImage = fs.readFileSync(dest);
     }
     if (input.lastImageUrl) {
       const dest = path.join(dir, 'last');
       await download(input.lastImageUrl, dest);
-      params.endingImage = fs.readFileSync(dest);
+      params.referenceImageEnd = fs.readFileSync(dest);
     }
     job.status = 'processing';
     job.percent = 1;
@@ -429,10 +429,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.199' });
+    return send(res, 200, { ok: true, version: '2.6.91.200' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.199' });
+    return send(res, 200, { ok: true, version: '2.6.91.200' });
   }
   if (req.method === 'GET' && url.pathname === '/live/sse') {
     if (!ticketOk(url.searchParams.get('ticket') || '')) return send(res, 401, { error: 'Unauthorized' });
