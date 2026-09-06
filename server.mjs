@@ -3,7 +3,7 @@ import http from 'http';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHmac } from 'crypto';
 
 const PORT = Number(process.env.PORT || 8787);
 const SECRET = process.env.KBG_SDK_SECRET || '';
@@ -13,6 +13,32 @@ let liveClient = null;
 let liveClientKey = '';
 let lastElsewhereAt = 0;
 const watching = new Set();
+
+function ticketOk(ticket) {
+  if (!SECRET) return true;
+  const parts = String(ticket || '').split('.');
+  if (parts.length !== 2) return false;
+  const ts = Number(parts[0]);
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > 180) return false;
+  const expect = createHmac('sha256', SECRET).update(String(Math.floor(ts))).digest('hex');
+  return parts[1] === expect;
+}
+
+function liveSnapshot() {
+  const rows = [];
+  for (const row of liveCache.values()) {
+    const status = String(row.status || 'processing').toLowerCase();
+    if (['completed', 'failed', 'canceled', 'cancelled'].includes(status)) continue;
+    rows.push({
+      id: row.id,
+      status,
+      percent: Math.max(0, Math.min(99, Math.round(Number(row.percent) || 0))),
+      mode: row.mode || 't2v',
+      startedAt: row.startedAt || Math.floor(Date.now() / 1000)
+    });
+  }
+  return rows;
+}
 
 async function followWorkflow(client, id) {
   if (!id || watching.has(id) || !client || !client.workflows) return;
@@ -281,10 +307,28 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.167' });
+    return send(res, 200, { ok: true, version: '2.6.91.174' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.167' });
+    return send(res, 200, { ok: true, version: '2.6.91.174' });
+  }
+  if (req.method === 'GET' && url.pathname === '/live/sse') {
+    if (!ticketOk(url.searchParams.get('ticket') || '')) return send(res, 401, { error: 'Unauthorized' });
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+    const push = function () {
+      try {
+        res.write('data: ' + JSON.stringify({ jobs: liveSnapshot(), workers: 0 }) + '\n\n');
+      } catch (e) {}
+    };
+    push();
+    const iv = setInterval(push, 1000);
+    req.on('close', function () { clearInterval(iv); });
+    return;
   }
   if (!authorized(req)) return send(res, 401, { error: 'Unauthorized' });
   if (req.method === 'POST' && url.pathname === '/live') {
@@ -294,7 +338,17 @@ const server = http.createServer(async (req, res) => {
       const list = await listLiveJobs(input.apiKey);
       const ids = Array.isArray(input.ids) ? input.ids : [];
       ids.slice(0, 8).forEach((id) => followWorkflow(liveClient, String(id || '')));
-      return send(res, 200, { ok: true, jobs: list });
+      let workers = 0;
+      try {
+        if (liveClient && liveClient.projects && typeof liveClient.projects.getAvailableModels === 'function') {
+          const models = await liveClient.projects.getAvailableModels('fast');
+          (models || []).forEach(function (m) {
+            const media = String((m && m.media) || '').toLowerCase();
+            if (media === 'video') workers += Number(m.workerCount || 0) || 0;
+          });
+        }
+      } catch (e) {}
+      return send(res, 200, { ok: true, jobs: list, workers: workers });
     } catch (err) {
       return send(res, 200, { ok: false, jobs: [], error: String(err.message || err) });
     }
@@ -308,7 +362,7 @@ const server = http.createServer(async (req, res) => {
       runJob(id, input);
       return send(res, 200, { id, status: 'queued' });
     } catch (err) {
-      return send(res, 400, { error: 'Unauthorized' });
+      return send(res, 400, { error: String(err.message || err) });
     }
   }
   const match = url.pathname.match(/^\/(?:r2v|job)\/(.+)$/);
