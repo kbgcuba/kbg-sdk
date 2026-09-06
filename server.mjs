@@ -137,11 +137,12 @@ function jobPercent(p) {
 
 function modeFromModel(model) {
   const m = String(model || '').toLowerCase();
-  if (m.includes('ref2') || m.includes('r2v')) return 'r2v';
-  if (m.includes('i2v')) return 'i2v';
-  if (m.includes('flf')) return 'flf2v';
-  if (m.includes('t2v')) return 't2v';
-  return 't2v';
+  if (m.includes('ref2') || m.includes('r2v') || m.includes('reference')) return 'r2v';
+  if (m.includes('flf') || (m.includes('first') && m.includes('last'))) return 'flf2v';
+  if (m.includes('i2v') || (m.includes('image') && m.includes('video'))) return 'i2v';
+  if (m.includes('t2v') || (m.includes('text') && m.includes('video'))) return 't2v';
+  if (m.includes('last')) return 'l2v';
+  return '';
 }
 
 function rememberLive(id, patch) {
@@ -161,7 +162,7 @@ function attachProject(p) {
   if (!p) return;
   const id = String(p.id || p.projectId || '');
   if (!id) return;
-  const model = p.modelId || p.model || (p.params && p.params.modelId) || '';
+  const model = p.modelId || p.model || p.modelName || (p.params && (p.params.modelId || p.params.model || p.params.videoModel)) || '';
   const jobsArr = [];
   try { Array.from(p.jobs || []).forEach(function (j) { jobsArr.push(j); }); } catch (e) {}
   const snap = {
@@ -328,10 +329,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.184' });
+    return send(res, 200, { ok: true, version: '2.6.91.196' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.184' });
+    return send(res, 200, { ok: true, version: '2.6.91.196' });
   }
   if (req.method === 'GET' && url.pathname === '/live/sse') {
     if (!ticketOk(url.searchParams.get('ticket') || '')) return send(res, 401, { error: 'Unauthorized' });
