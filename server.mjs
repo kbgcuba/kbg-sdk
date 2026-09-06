@@ -240,18 +240,31 @@ async function listLiveJobs(apiKey) {
         await liveClient.projects.sync();
       }
     } catch (e) {}
+    try {
+      if (liveClient.projects && typeof liveClient.projects.waitForModels === 'function') {
+        await liveClient.projects.waitForModels();
+      }
+    } catch (e) {}
     const tracked = (liveClient.projects && liveClient.projects.trackedProjects) || [];
     tracked.forEach(attachProject);
     try {
-      const names = ['listProjectsElsewhere','getProjectsElsewhere','listActiveProjects','getActiveProjects'];
-      for (const n of names) {
-        if (liveClient.projects && typeof liveClient.projects[n] === 'function') {
-          let elsewhere = await liveClient.projects[n]();
-          if (elsewhere && !Array.isArray(elsewhere)) {
-            elsewhere = elsewhere.projects || elsewhere.active || elsewhere.items || elsewhere.jobs || [];
-          }
-          (elsewhere || []).forEach(attachProject);
+      if (typeof liveClient.projects.listProjectsElsewhere === 'function') {
+        let elsewhere = await liveClient.projects.listProjectsElsewhere();
+        if (elsewhere && !Array.isArray(elsewhere)) {
+          elsewhere = elsewhere.projects || elsewhere.active || elsewhere.items || elsewhere.jobs || [];
         }
+        (elsewhere || []).forEach(attachProject);
+      }
+    } catch (e) {}
+    try {
+      const ids = [];
+      for (const [jid, job] of jobs) {
+        if (job && job.projectId) ids.push(job.projectId);
+        if (jid) ids.push(jid);
+      }
+      if (ids.length && typeof liveClient.projects.resolveMissing === 'function') {
+        const found = await liveClient.projects.resolveMissing(ids);
+        (found || []).forEach(attachProject);
       }
     } catch (e) {}
   } catch (e) {}
@@ -263,7 +276,7 @@ async function listLiveJobs(apiKey) {
     rememberLive(id, {
       status: job.status || 'processing',
       percent: Number(job.percent || 0),
-      mode: job.mode || 'r2v'
+      mode: job.mode || job.kind || 't2v'
     });
   }
   const rows = [];
@@ -416,10 +429,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.198' });
+    return send(res, 200, { ok: true, version: '2.6.91.199' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.198' });
+    return send(res, 200, { ok: true, version: '2.6.91.199' });
   }
   if (req.method === 'GET' && url.pathname === '/live/sse') {
     if (!ticketOk(url.searchParams.get('ticket') || '')) return send(res, 401, { error: 'Unauthorized' });
