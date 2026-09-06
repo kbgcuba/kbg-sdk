@@ -146,7 +146,9 @@ function modeFromModel(model) {
 
 function rememberLive(id, patch) {
   const prev = liveCache.get(id) || { id, percent: 0, status: 'processing', mode: 't2v', startedAt: Math.floor(Date.now()/1000) };
-  const next = Object.assign({}, prev, patch, { id, startedAt: prev.startedAt || Math.floor(Date.now()/1000) });
+  const created = Number(patch && patch.startedAt) || 0;
+  const startedAt = Math.min(prev.startedAt || Date.now()/1000, created || prev.startedAt || Math.floor(Date.now()/1000));
+  const next = Object.assign({}, prev, patch, { id, startedAt: Math.floor(startedAt) });
   if (Number(next.percent) < Number(prev.percent || 0) && Number(next.percent) < 1) {
     next.percent = prev.percent;
   } else {
@@ -160,10 +162,32 @@ function attachProject(p) {
   const id = String(p.id || p.projectId || '');
   if (!id) return;
   const model = p.modelId || p.model || (p.params && p.params.modelId) || '';
+  const jobsArr = [];
+  try { Array.from(p.jobs || []).forEach(function (j) { jobsArr.push(j); }); } catch (e) {}
+  const snap = {
+    progress: p.progress,
+    percent: p.percent,
+    externalProgress: p.externalProgress,
+    jobs: jobsArr.map(function (j) {
+      return {
+        progress: j && (j.progress ?? j.externalProgress),
+        percent: j && j.percent,
+        externalProgress: j && j.externalProgress,
+        step: j && j.step,
+        stepCount: j && j.stepCount
+      };
+    })
+  };
+  let created = 0;
+  try {
+    const raw = p.createdAt || p.startedAt || p.created || p.created_at;
+    created = raw ? Math.floor(new Date(raw).getTime()/1000) : 0;
+  } catch (e) {}
   rememberLive(id, {
     status: String(p.status || 'processing').toLowerCase(),
-    percent: jobPercent(p),
-    mode: modeFromModel(model)
+    percent: Math.max(jobPercent(p), jobPercent(snap)),
+    mode: modeFromModel(model),
+    startedAt: created || undefined
   });
   if (p._kbgLive) return;
   p._kbgLive = true;
@@ -203,15 +227,12 @@ async function listLiveJobs(apiKey) {
     } catch (e) {}
     const tracked = (liveClient.projects && liveClient.projects.trackedProjects) || [];
     tracked.forEach(attachProject);
-    if (Date.now() - lastElsewhereAt > 15000) {
-      lastElsewhereAt = Date.now();
-      try {
-        if (liveClient.projects && typeof liveClient.projects.listProjectsElsewhere === 'function') {
-          const elsewhere = await liveClient.projects.listProjectsElsewhere();
-          (elsewhere || []).forEach(attachProject);
-        }
-      } catch (e) {}
-    }
+    try {
+      if (liveClient.projects && typeof liveClient.projects.listProjectsElsewhere === 'function') {
+        const elsewhere = await liveClient.projects.listProjectsElsewhere();
+        (elsewhere || []).forEach(attachProject);
+      }
+    } catch (e) {}
   } catch (e) {}
   for (const [id, job] of jobs) {
     if (!job || job.status === 'completed' || job.status === 'failed') {
@@ -307,10 +328,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.174' });
+    return send(res, 200, { ok: true, version: '2.6.91.184' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.174' });
+    return send(res, 200, { ok: true, version: '2.6.91.184' });
   }
   if (req.method === 'GET' && url.pathname === '/live/sse') {
     if (!ticketOk(url.searchParams.get('ticket') || '')) return send(res, 401, { error: 'Unauthorized' });
