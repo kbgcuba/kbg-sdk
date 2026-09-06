@@ -230,7 +230,7 @@ async function listLiveJobs(apiKey) {
       liveClientKey = apiKey;
       if (liveClient.projects && typeof liveClient.projects.on === 'function') {
         liveClient.projects.on('projectsSynced', (info) => {
-          const extra = [].concat(info?.active || [], info?.recoveredActive || []);
+          const extra = [].concat(info?.active || [], info?.recoveredActive || [], info?.elsewhere || [], info?.renderingElsewhere || []);
           extra.forEach(attachProject);
         });
       }
@@ -243,9 +243,15 @@ async function listLiveJobs(apiKey) {
     const tracked = (liveClient.projects && liveClient.projects.trackedProjects) || [];
     tracked.forEach(attachProject);
     try {
-      if (liveClient.projects && typeof liveClient.projects.listProjectsElsewhere === 'function') {
-        const elsewhere = await liveClient.projects.listProjectsElsewhere();
-        (elsewhere || []).forEach(attachProject);
+      const names = ['listProjectsElsewhere','getProjectsElsewhere','listActiveProjects','getActiveProjects'];
+      for (const n of names) {
+        if (liveClient.projects && typeof liveClient.projects[n] === 'function') {
+          let elsewhere = await liveClient.projects[n]();
+          if (elsewhere && !Array.isArray(elsewhere)) {
+            elsewhere = elsewhere.projects || elsewhere.active || elsewhere.items || elsewhere.jobs || [];
+          }
+          (elsewhere || []).forEach(attachProject);
+        }
       }
     } catch (e) {}
   } catch (e) {}
@@ -257,7 +263,7 @@ async function listLiveJobs(apiKey) {
     rememberLive(id, {
       status: job.status || 'processing',
       percent: Number(job.percent || 0),
-      mode: 'r2v'
+      mode: job.mode || 'r2v'
     });
   }
   const rows = [];
@@ -273,6 +279,73 @@ async function listLiveJobs(apiKey) {
     });
   }
   return rows;
+}
+
+async function runVideoJob(id, input) {
+  const job = jobs.get(id);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kbg-vid-'));
+  try {
+    const { SogniClient } = await import('@sogni-ai/sogni-client');
+    const sogni = await SogniClient.createInstance({
+      appId: 'kbg-video-generator',
+      appSource: 'kbg-video-generator',
+      network: 'fast',
+      apiKey: input.apiKey
+    });
+    const mode = String(input.mode || 't2v');
+    const modelId = input.modelId || (mode === 'i2v' ? 'minimax-h3-i2v' : mode === 'flf2v' ? 'minimax-h3-flf2v' : 'minimax-h3-t2v');
+    const params = {
+      type: 'video',
+      network: 'fast',
+      modelId,
+      positivePrompt: input.prompt,
+      duration: Number(input.duration) || 5,
+      width: Number(input.width) || 1344,
+      height: Number(input.height) || 768,
+      numberOfMedia: 1,
+      tokenType: 'auto'
+    };
+    if (input.generateAudio === false) params.generateAudio = false;
+    else params.generateAudio = true;
+    if (input.imageUrl) {
+      const dest = path.join(dir, 'start');
+      await download(input.imageUrl, dest);
+      params.startingImage = fs.readFileSync(dest);
+    }
+    if (input.lastImageUrl) {
+      const dest = path.join(dir, 'last');
+      await download(input.lastImageUrl, dest);
+      params.endingImage = fs.readFileSync(dest);
+    }
+    job.status = 'processing';
+    job.percent = 1;
+    rememberLive(id, { percent: 1, status: 'processing', mode: mode });
+    const project = await sogni.projects.create(params);
+    job.projectId = project.id;
+    rememberLive(project.id, { percent: 1, status: 'processing', mode: mode });
+    if (project && typeof project.on === 'function') {
+      project.on('progress', (info) => {
+        const raw = Number(info?.progress ?? info?.percent ?? info ?? 0);
+        const p = raw > 0 && raw <= 1 ? raw * 100 : raw;
+        const pct = Math.max(1, Math.min(99, p || 0));
+        job.percent = Math.max(job.percent || 1, pct);
+        rememberLive(id, { percent: job.percent, status: 'processing', mode: mode });
+        if (project.id) rememberLive(project.id, { percent: job.percent, status: 'processing', mode: mode });
+      });
+    }
+    const urls = await project.waitForCompletion();
+    const list = Array.isArray(urls) ? urls : (urls ? [urls] : []);
+    job.status = 'completed';
+    job.percent = 100;
+    job.urls = list;
+    job.video_url = list[0] || '';
+    liveCache.delete(id);
+    if (project.id) liveCache.delete(project.id);
+  } catch (err) {
+    job.status = 'failed';
+    job.error = String(err && err.message ? err.message : err);
+    liveCache.delete(id);
+  }
 }
 
 async function runJob(id, input) {
@@ -343,10 +416,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   const url = new URL(req.url, 'http://localhost');
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, version: '2.6.91.196' });
+    return send(res, 200, { ok: true, version: '2.6.91.198' });
   }
   if (req.method === 'GET' && url.pathname === '/version') {
-    return send(res, 200, { ok: true, version: '2.6.91.196' });
+    return send(res, 200, { ok: true, version: '2.6.91.198' });
   }
   if (req.method === 'GET' && url.pathname === '/live/sse') {
     if (!ticketOk(url.searchParams.get('ticket') || '')) return send(res, 401, { error: 'Unauthorized' });
@@ -389,6 +462,19 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: false, jobs: [], error: String(err.message || err) });
     }
   }
+  if (req.method === 'POST' && url.pathname === '/video') {
+    try {
+      const input = await readBody(req);
+      if (!input.apiKey || !input.prompt) return send(res, 400, { error: 'apiKey and prompt required' });
+      const id = 'sdk-' + randomUUID();
+      jobs.set(id, { status: 'queued', percent: 1, kind: 'video', mode: input.mode || 't2v' });
+      rememberLive(id, { percent: 1, status: 'queued', mode: input.mode || 't2v' });
+      runVideoJob(id, input);
+      return send(res, 200, { id, status: 'queued', kind: 'video' });
+    } catch (err) {
+      return send(res, 400, { error: String(err.message || err) });
+    }
+  }
   if (req.method === 'POST' && url.pathname === '/r2v') {
     try {
       const input = await readBody(req);
@@ -401,7 +487,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 400, { error: String(err.message || err) });
     }
   }
-  const match = url.pathname.match(/^\/(?:r2v|job)\/(.+)$/);
+  const match = url.pathname.match(/^\/(?:r2v|job|video)\/(.+)$/);
   if (req.method === 'GET' && match) {
     const job = jobs.get(match[1]);
     if (!job) return send(res, 404, { error: 'Unknown job' });
