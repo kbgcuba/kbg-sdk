@@ -1,12 +1,12 @@
 {
   "name": "kbg-sogni-sdk",
-  "version": "1.0.0",
-  "private": true,
+  "version": "2.6.91.199",
   "type": "module",
+  "main": "server.mjs",
   "scripts": {
     "start": "node server.mjs"
   },
   "dependencies": {
-    "@sogni-ai/sogni-client": "^5.0.0"
+    "@sogni-ai/sogni-client": "latest"
   }
 }
