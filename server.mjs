@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { randomUUID, createHmac } from 'crypto';
+import { execSync } from 'child_process';
 
 const PORT = Number(process.env.PORT || 8787);
 const SECRET = process.env.KBG_SDK_SECRET || '';
@@ -95,6 +96,19 @@ function authorized(req) {
   return req.headers['x-kbg-secret'] === SECRET;
 }
 
+function fileHasAudio(file) {
+  try {
+    const out = execSync('ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 ' + JSON.stringify(file), {encoding:'utf8', timeout:15000});
+    return String(out||'').trim() !== '';
+  } catch (e) {
+    try {
+      const out = execSync('ffmpeg -i ' + JSON.stringify(file), {encoding:'utf8', timeout:15000});
+      return /Audio:/i.test(out);
+    } catch (e2) {
+      return null;
+    }
+  }
+}
 async function download(url, dest) {
   const res = await fetch(url);
   if (!res.ok) throw new Error('Download failed ' + res.status);
